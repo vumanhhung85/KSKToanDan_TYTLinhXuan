@@ -368,6 +368,7 @@ const LOGO_SRC = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAASwAAAEsCAYAAAB5
 const ADMIN_PW = "admin@2026";
 const VIEWER_PW = "bssang@2026";
 const STAFF_PW = "nhaplieu";
+const LEADER_PW = "lanhdao";
 const DATE_MIN = "2026-07-15";
 const DATE_MAX = "2026-11-15";
 const EDIT_WINDOW_MS = 48 * 60 * 60 * 1000; // 48 giờ
@@ -390,6 +391,7 @@ const DEFAULT_TEAM_IDS = [1,2,3];
 const MAX_SHIFTS_PER_TEAM_PER_DAY = 2;
 const SCHEDULE_KEY = STORE_PREFIX + "schedule";
 const TEAMS_KEY = STORE_PREFIX + "teams";
+const ACCOUNTS_KEY = STORE_PREFIX + "accounts";
 
 /* ================= STATE ================= */
 let state = {
@@ -429,7 +431,50 @@ let state = {
   teamEditId: null,
   teamConfirmDeleteId: null,
   teamMgmtMessage: null,
+  accountsConfig: null,      // {password: {password, label, tabs:{report,entry,schedule}}}
+  accountFormOpen: false,
+  accountForm: {password:"", label:"", tabs:{report:false, entry:false, schedule:false}},
+  accountEditKey: null,      // original password key being edited, null = adding new
+  accountConfirmDeleteKey: null,
+  accountMgmtMessage: null,
 };
+
+async function loadAccountsConfig(){
+  if(state.accountsConfig) return state.accountsConfig;
+  let raw = await storageGet(ACCOUNTS_KEY, true);
+  let map;
+  if(raw){ try{ map = JSON.parse(raw); }catch(e){ map = null; } }
+  if(!map) map = {};
+  let changed = false;
+  if(!map[VIEWER_PW]){ map[VIEWER_PW] = {password: VIEWER_PW, label: "BS. Trần Thanh Sang", tabs:{report:true, entry:true, schedule:false}}; changed = true; }
+  if(!map[STAFF_PW]){ map[STAFF_PW] = {password: STAFF_PW, label: "Nhân viên nhập liệu", tabs:{report:true, entry:true, schedule:true}}; changed = true; }
+  if(!map[LEADER_PW]){ map[LEADER_PW] = {password: LEADER_PW, label: "Lãnh đạo", tabs:{report:true, entry:false, schedule:false}}; changed = true; }
+  if(changed) await storageSet(ACCOUNTS_KEY, JSON.stringify(map), true);
+  state.accountsConfig = map;
+  return map;
+}
+async function saveAccountsConfig(map){
+  await storageSet(ACCOUNTS_KEY, JSON.stringify(map), true);
+  state.accountsConfig = map;
+}
+function isPasswordTaken(pw, exclude){
+  exclude = exclude || {};
+  if(pw === ADMIN_PW) return true;
+  const pwMap = state.passwordsMap || {};
+  for(const id of KHU_IDS){
+    if(exclude.khuId !== undefined && String(exclude.khuId) === String(id)) continue;
+    if(pwMap[id] === pw) return true;
+  }
+  const accMap = state.accountsConfig || {};
+  for(const key of Object.keys(accMap)){
+    if(exclude.accountKey !== undefined && exclude.accountKey === key) continue;
+    if(key === pw) return true;
+  }
+  return false;
+}
+function isFullControl(){
+  return state.role === 'admin' || (state.role && state.role.type === 'custom');
+}
 
 /* ================= STORAGE HELPERS ================= */
 async function storageGet(key, shared){
@@ -489,12 +534,18 @@ async function saveKhuData(id, data){
 /* ================= UTIL ================= */
 function fmt(n){ return Number(n||0).toLocaleString('vi-VN'); }
 function pct(n){ return (Number(n||0)).toLocaleString('vi-VN', {minimumFractionDigits:2, maximumFractionDigits:2}); }
+function toDateStr(d){
+  const y = d.getFullYear();
+  const m = String(d.getMonth()+1).padStart(2,'0');
+  const day = String(d.getDate()).padStart(2,'0');
+  return `${y}-${m}-${day}`;
+}
 function todayClamped(){
   const min = new Date(DATE_MIN+"T00:00:00");
   const max = new Date(DATE_MAX+"T00:00:00");
   const now = new Date();
   let d = now < min ? min : (now > max ? max : now);
-  return d.toISOString().slice(0,10);
+  return toDateStr(d);
 }
 function computeTotals(records){
   let phat=0, thu=0, kham=0;
@@ -567,27 +618,35 @@ async function attemptLogin(pw){
   if(pw === ADMIN_PW){
     state.role = 'admin';
     state.tab = 'report';
-  } else if(pw === VIEWER_PW){
-    state.role = 'viewer';
-    state.tab = 'report';
-  } else if(pw === STAFF_PW){
-    state.role = 'staff';
-    state.tab = 'report';
   } else {
-    const map = await loadPasswordsMap();
-    let matchedId = null;
-    for(const id of KHU_IDS){
-      if(map[id] === pw){ matchedId = id; break; }
-    }
-    if(matchedId){
-      state.role = {type:'kp', id: matchedId};
-      state.tab = 'entry';
-      state.entryKhuId = matchedId;
+    const accounts = await loadAccountsConfig();
+    if(accounts[pw]){
+      const acc = accounts[pw];
+      state.role = {type:'custom', password: pw, label: acc.label, tabs: acc.tabs};
+      state.tab = acc.tabs.report ? 'report' : (acc.tabs.entry ? 'entry' : (acc.tabs.schedule ? 'schedule' : null));
+      if(!state.tab){
+        state.loginBusy = false;
+        state.loginError = "Tài khoản này chưa được cấp quyền xem tab nào. Vui lòng liên hệ Quản trị viên.";
+        state.role = null;
+        render();
+        return;
+      }
     } else {
-      state.loginBusy = false;
-      state.loginError = "Mật mã không đúng. Vui lòng kiểm tra lại.";
-      render();
-      return;
+      const map = await loadPasswordsMap();
+      let matchedId = null;
+      for(const id of KHU_IDS){
+        if(map[id] === pw){ matchedId = id; break; }
+      }
+      if(matchedId){
+        state.role = {type:'kp', id: matchedId};
+        state.tab = 'entry';
+        state.entryKhuId = matchedId;
+      } else {
+        state.loginBusy = false;
+        state.loginError = "Mật mã không đúng. Vui lòng kiểm tra lại.";
+        render();
+        return;
+      }
     }
   }
   state.loginBusy = false;
@@ -598,6 +657,7 @@ async function attemptLogin(pw){
   render();
   if(state.tab === 'entry') afterEntryTabShown();
   if(state.tab === 'report') loadReport();
+  resetInactivityTimer();
 }
 
 function logout(){
@@ -612,25 +672,34 @@ function logout(){
     scheduleForm:{shift:"",name:"",phone:"",khuId:"",team:""}, scheduleFormErrors:{},
     scheduleMessage:null, scheduleEditId:null, gridWeekStart:"",
     teamsConfig: state.teamsConfig, teamFormOpen:false, teamForm:{startDate:"",endDate:""},
-    teamEditId:null, teamConfirmDeleteId:null, teamMgmtMessage:null
+    teamEditId:null, teamConfirmDeleteId:null, teamMgmtMessage:null,
+    accountsConfig: state.accountsConfig, accountFormOpen:false,
+    accountForm:{password:"",label:"",tabs:{report:false,entry:false,schedule:false}},
+    accountEditKey:null, accountConfirmDeleteKey:null, accountMgmtMessage:null
   };
   entryDataCache = {};
+  clearTimeout(inactivityTimer);
   render();
 }
 
 /* ---------- SHELL (masthead + tabs) ---------- */
 function roleLabel(){
   if(state.role === 'admin') return 'Quản trị toàn quyền';
-  if(state.role === 'viewer') return 'BS. Trần Thanh Sang';
-  if(state.role === 'staff') return 'Nhân viên nhập liệu';
+  if(state.role && state.role.type === 'custom') return state.role.label;
   if(state.role && state.role.type==='kp') return 'Khu phố '+state.role.id;
   return '';
 }
 
 function availableTabs(){
-  if(state.role === 'admin') return [['report','Báo cáo tổng'],['entry','Nhập liệu hằng ngày'],['schedule','Đăng ký lịch khám'],['password','Đổi mật mã khu phố']];
-  if(state.role === 'viewer') return [['report','Báo cáo tổng'],['entry','Nhập liệu hằng ngày']];
-  if(state.role === 'staff') return [['report','Báo cáo tổng'],['entry','Nhập liệu hằng ngày'],['schedule','Đăng ký lịch khám']];
+  if(state.role === 'admin') return [['report','Báo cáo tổng'],['entry','Nhập liệu hằng ngày'],['schedule','Đăng ký lịch khám'],['password','Quản lý tài khoản']];
+  if(state.role && state.role.type === 'custom'){
+    const t = state.role.tabs || {};
+    const tabs = [];
+    if(t.report) tabs.push(['report','Báo cáo tổng']);
+    if(t.entry) tabs.push(['entry','Nhập liệu hằng ngày']);
+    if(t.schedule) tabs.push(['schedule','Đăng ký lịch khám']);
+    return tabs;
+  }
   return [['entry','Nhập liệu hằng ngày'],['schedule','Đăng ký lịch khám']];
 }
 
@@ -1056,8 +1125,8 @@ function renderEntryTab(){
       }
     </div>
 
-    ${(state.role === 'admin' || state.role === 'staff') ? renderBulkSection() : ''}
-    ${(state.role === 'admin' || state.role === 'staff') ? renderExportToolsSection() : ''}
+    ${(isFullControl()) ? renderBulkSection() : ''}
+    ${(isFullControl()) ? renderExportToolsSection() : ''}
   `;
 }
 
@@ -1074,7 +1143,7 @@ async function afterEntryTabShown(){
     }
     if(state.tab === 'entry') render();
   }
-  if((state.role === 'admin' || state.role === 'staff') && !state.bulkLoaded){
+  if((isFullControl()) && !state.bulkLoaded){
     afterBulkTabShown();
   }
 }
@@ -1116,7 +1185,7 @@ function bindEntryTab(){
     });
   });
 
-  if(state.role === 'admin' || state.role === 'staff'){
+  if(isFullControl()){
     bindBulkPanel();
     bindExportToolsSection();
   }
@@ -1201,6 +1270,7 @@ function renderReportTab(){
         <h3 style="margin:0;">📈 Báo cáo tổng — Toàn phường</h3>
         <button class="btn-secondary" id="refreshReportBtn">🔄 Làm mới</button>
       </div>
+      <p class="muted" style="margin-bottom:14px;">Đạt (%) = Khám / Dân số khu phố × 100 — tức tỷ lệ số người đã được khám trên tổng dân số của khu phố đó.</p>
       <div class="table-scroll">
         <table>
           <thead>
@@ -1210,7 +1280,7 @@ function renderReportTab(){
               <th>Phát phiếu</th>
               <th>Thu về</th>
               <th>Khám</th>
-              <th>Đạt (%)</th>
+              <th title="Đạt = Khám / Dân số × 100">Đạt (%)</th>
               <th>Thứ hạng</th>
             </tr>
           </thead>
@@ -1255,7 +1325,7 @@ async function loadReport(){
     }
   });
   results.forEach(r=> r.rank = rankMap[r.id]);
-  state.reportData = results.sort((a,b)=>a.id-b.id);
+  state.reportData = results.sort((a,b)=> a.rank - b.rank || a.id - b.id);
   state.reportLoading = false;
   render();
 }
@@ -1300,11 +1370,167 @@ function renderPasswordTab(){
         </table>
       </div>
     </div>
+    ${renderAccountsSection()}
   `;
 }
 
 async function afterPasswordTabShown(){
   await loadPasswordsMap();
+  await loadAccountsConfig();
+  render();
+}
+
+function renderAccountsSection(){
+  const accounts = state.accountsConfig || {};
+  const keys = Object.keys(accounts);
+  const TAB_LABELS_VN = {report:'Báo cáo tổng', entry:'Nhập liệu hằng ngày', schedule:'Đăng ký lịch khám'};
+  const rows2 = keys.map(key=>{
+    const acc = accounts[key];
+    const isPendingDelete = state.accountConfirmDeleteKey === key;
+    const tabsLabel = ['report','entry','schedule'].filter(t=>acc.tabs && acc.tabs[t]).map(t=>TAB_LABELS_VN[t]).join(', ') || '— (chưa cấp quyền)';
+    const actionCell = isPendingDelete
+      ? `<span class="muted">Xóa?</span><button class="edit-link edit-link-danger" data-account-confirm-delete="${escapeHtml(key)}">Xác nhận</button><button class="edit-link" data-account-cancel-delete="${escapeHtml(key)}">Hủy</button>`
+      : `<button class="edit-link" data-account-edit="${escapeHtml(key)}">Sửa</button><button class="edit-link edit-link-danger" data-account-delete="${escapeHtml(key)}">Xóa</button>`;
+    return `<tr>
+      <td style="text-align:left;">${escapeHtml(acc.label)}</td>
+      <td style="text-align:left;"><b style="color:var(--green-dark);">${escapeHtml(key)}</b></td>
+      <td style="text-align:left;">${tabsLabel}</td>
+      <td style="text-align:center;"><div class="action-cell">${actionCell}</div></td>
+    </tr>`;
+  }).join('');
+
+  const fv = state.accountForm;
+  const formBlock = state.accountFormOpen ? `
+    <div class="field-row" style="margin-top:14px;">
+      <div class="field">
+        <label>Tên hiển thị</label>
+        <input type="text" id="accountLabelInput" value="${escapeHtml(fv.label)}">
+      </div>
+      <div class="field">
+        <label>Mật mã</label>
+        <input type="text" id="accountPasswordInput" value="${escapeHtml(fv.password)}">
+      </div>
+    </div>
+    <div class="field-row">
+      <div class="field">
+        <label>Được xem các tab</label>
+        <div style="display:flex; gap:16px; flex-wrap:wrap; padding-top:6px;">
+          <label style="display:flex; align-items:center; gap:6px; font-weight:600; font-size:13.5px;"><input type="checkbox" id="accountTabReport" ${fv.tabs.report?'checked':''}> Báo cáo tổng</label>
+          <label style="display:flex; align-items:center; gap:6px; font-weight:600; font-size:13.5px;"><input type="checkbox" id="accountTabEntry" ${fv.tabs.entry?'checked':''}> Nhập liệu hằng ngày</label>
+          <label style="display:flex; align-items:center; gap:6px; font-weight:600; font-size:13.5px;"><input type="checkbox" id="accountTabSchedule" ${fv.tabs.schedule?'checked':''}> Đăng ký lịch khám</label>
+        </div>
+      </div>
+    </div>
+    ${state.accountMgmtMessage ? `<div class="banner ${state.accountMgmtMessage.type}">${escapeHtml(state.accountMgmtMessage.text)}</div>` : ''}
+    <button class="btn-primary" id="accountSaveBtn">${state.accountEditKey ? '💾 Lưu thay đổi' : '+ Thêm mật mã'}</button>
+    <button class="btn-secondary" id="accountCancelFormBtn" style="margin-left:8px;">Hủy</button>
+  ` : `${state.accountMgmtMessage ? `<div class="banner ${state.accountMgmtMessage.type}">${escapeHtml(state.accountMgmtMessage.text)}</div>` : ''}<button class="btn-secondary" id="accountOpenAddBtn" style="margin-top:6px;">+ Thêm mật mã mới</button>`;
+
+  return `
+    <div class="card">
+      <h3>👤 Quản lý mật mã & phân quyền</h3>
+      <p class="muted" style="margin-bottom:12px;">Thêm mật mã mới và chọn những tab mà mật mã đó được phép xem (Báo cáo tổng / Nhập liệu hằng ngày / Đăng ký lịch khám). Mật mã <b>admin@2026</b> là cố định, không hiển thị/sửa được ở đây.</p>
+      <div class="table-scroll">
+        <table>
+          <thead><tr><th style="text-align:left;">Tên hiển thị</th><th style="text-align:left;">Mật mã</th><th style="text-align:left;">Được xem tab</th><th>Thao tác</th></tr></thead>
+          <tbody>${rows2}</tbody>
+        </table>
+      </div>
+      ${formBlock}
+    </div>
+  `;
+}
+
+function bindAccountsSection(){
+  const openAddBtn = document.getElementById('accountOpenAddBtn');
+  if(openAddBtn) openAddBtn.addEventListener('click', ()=>{
+    state.accountFormOpen = true;
+    state.accountEditKey = null;
+    state.accountForm = {password:"", label:"", tabs:{report:false,entry:false,schedule:false}};
+    state.accountMgmtMessage = null;
+    render();
+  });
+  const cancelBtn = document.getElementById('accountCancelFormBtn');
+  if(cancelBtn) cancelBtn.addEventListener('click', ()=>{
+    state.accountFormOpen = false;
+    state.accountEditKey = null;
+    render();
+  });
+  const labelInput = document.getElementById('accountLabelInput');
+  if(labelInput) labelInput.addEventListener('input', ()=>{ state.accountForm.label = labelInput.value; });
+  const pwInput = document.getElementById('accountPasswordInput');
+  if(pwInput) pwInput.addEventListener('input', ()=>{ state.accountForm.password = pwInput.value; });
+  const cbReport = document.getElementById('accountTabReport');
+  if(cbReport) cbReport.addEventListener('change', ()=>{ state.accountForm.tabs.report = cbReport.checked; });
+  const cbEntry = document.getElementById('accountTabEntry');
+  if(cbEntry) cbEntry.addEventListener('change', ()=>{ state.accountForm.tabs.entry = cbEntry.checked; });
+  const cbSchedule = document.getElementById('accountTabSchedule');
+  if(cbSchedule) cbSchedule.addEventListener('change', ()=>{ state.accountForm.tabs.schedule = cbSchedule.checked; });
+
+  const saveBtn = document.getElementById('accountSaveBtn');
+  if(saveBtn) saveBtn.addEventListener('click', handleSaveAccount);
+
+  document.querySelectorAll('[data-account-edit]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      const key = btn.dataset.accountEdit;
+      const acc = state.accountsConfig[key];
+      state.accountEditKey = key;
+      state.accountFormOpen = true;
+      state.accountForm = {password: key, label: acc.label, tabs: {report:!!acc.tabs.report, entry:!!acc.tabs.entry, schedule:!!acc.tabs.schedule}};
+      state.accountMgmtMessage = null;
+      render();
+    });
+  });
+  document.querySelectorAll('[data-account-delete]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{ state.accountConfirmDeleteKey = btn.dataset.accountDelete; render(); });
+  });
+  document.querySelectorAll('[data-account-cancel-delete]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{ state.accountConfirmDeleteKey = null; render(); });
+  });
+  document.querySelectorAll('[data-account-confirm-delete]').forEach(btn=>{
+    btn.addEventListener('click', ()=> handleDeleteAccount(btn.dataset.accountConfirmDelete));
+  });
+}
+
+async function handleSaveAccount(){
+  const fv = state.accountForm;
+  const newPw = (fv.password||"").trim();
+  const label = (fv.label||"").trim();
+  if(!newPw || !label){
+    state.accountMgmtMessage = {type:'err', text:'Vui lòng nhập đầy đủ Tên hiển thị và Mật mã.'};
+    render();
+    return;
+  }
+  if(!fv.tabs.report && !fv.tabs.entry && !fv.tabs.schedule){
+    state.accountMgmtMessage = {type:'err', text:'Vui lòng chọn ít nhất 1 tab được xem.'};
+    render();
+    return;
+  }
+  await loadPasswordsMap();
+  const accounts = await loadAccountsConfig();
+  const excludeKey = state.accountEditKey || undefined;
+  if(isPasswordTaken(newPw, {accountKey: excludeKey})){
+    state.accountMgmtMessage = {type:'err', text:'Mật mã này đã được dùng cho tài khoản khác. Vui lòng chọn mật mã khác.'};
+    render();
+    return;
+  }
+  if(state.accountEditKey && state.accountEditKey !== newPw){
+    delete accounts[state.accountEditKey];
+  }
+  accounts[newPw] = {password:newPw, label, tabs:{report:!!fv.tabs.report, entry:!!fv.tabs.entry, schedule:!!fv.tabs.schedule}};
+  await saveAccountsConfig(accounts);
+  state.accountFormOpen = false;
+  state.accountEditKey = null;
+  state.accountMgmtMessage = {type:'ok', text: 'Đã lưu tài khoản thành công.'};
+  render();
+}
+
+async function handleDeleteAccount(key){
+  const accounts = await loadAccountsConfig();
+  delete accounts[key];
+  await saveAccountsConfig(accounts);
+  state.accountConfirmDeleteKey = null;
+  state.accountMgmtMessage = {type:'ok', text:'Đã xóa tài khoản.'};
   render();
 }
 
@@ -1321,6 +1547,12 @@ function bindPasswordTab(){
       const input = document.getElementById('pwEdit_'+id);
       const newPw = (input.value||"").trim();
       if(!newPw){ state.pwMsgs[id] = "Mật mã không được để trống."; render(); return; }
+      await loadAccountsConfig();
+      if(isPasswordTaken(newPw, {khuId: id})){
+        state.pwMsgs[id] = "Mật mã này đã được dùng cho tài khoản khác. Vui lòng chọn mật mã khác.";
+        render();
+        return;
+      }
       const map = await loadPasswordsMap();
       map[id] = newPw;
       await storageSet(STORE_PREFIX+"passwords", JSON.stringify(map), true);
@@ -1333,8 +1565,15 @@ function bindPasswordTab(){
   document.querySelectorAll('[data-reset-pw]').forEach(btn=>{
     btn.addEventListener('click', async ()=>{
       const id = btn.dataset.resetPw;
+      const defaultPw = "kp"+id;
+      await loadAccountsConfig();
+      if(isPasswordTaken(defaultPw, {khuId: id})){
+        state.pwMsgs[id] = `Không thể khôi phục vì mật mã mặc định "${defaultPw}" đang trùng với tài khoản khác.`;
+        render();
+        return;
+      }
       const map = await loadPasswordsMap();
-      map[id] = "kp"+id;
+      map[id] = defaultPw;
       await storageSet(STORE_PREFIX+"passwords", JSON.stringify(map), true);
       state.passwordsMap = map;
       delete state.pwEdits[id];
@@ -1342,6 +1581,7 @@ function bindPasswordTab(){
       render();
     });
   });
+  bindAccountsSection();
 }
 
 async function loadTeamsConfig(){
@@ -1419,13 +1659,24 @@ function shiftLabel(shiftKey){
 function addDays(dateStr, days){
   const d = new Date(dateStr+"T00:00:00");
   d.setDate(d.getDate()+days);
-  return d.toISOString().slice(0,10);
+  return toDateStr(d);
 }
 function getMonday(dateStr){
   const d = new Date(dateStr+"T00:00:00");
   const day = d.getDay(); // 0=CN..6=T7
   const diff = day === 0 ? -6 : 1-day;
   return addDays(dateStr, diff);
+}
+const WEEKDAY_LABELS = {0:'Chủ nhật', 1:'Thứ 2', 2:'Thứ 3', 3:'Thứ 4', 4:'Thứ 5', 5:'Thứ 6', 6:'Thứ 7'};
+function weekdayLabel(dateStr){
+  const d = new Date(dateStr+"T00:00:00");
+  return WEEKDAY_LABELS[d.getDay()];
+}
+function getISOWeekNumber(dateStr){
+  const d = new Date(dateStr+"T00:00:00");
+  d.setDate(d.getDate() + 3 - ((d.getDay()+6)%7)); // đưa về Thứ 5 của tuần đó (chuẩn ISO 8601)
+  const week1 = new Date(d.getFullYear(), 0, 4);
+  return 1 + Math.round(((d - week1) / 86400000 - 3 + ((week1.getDay()+6)%7)) / 7);
 }
 
 async function afterScheduleTabShown(){
@@ -1458,7 +1709,7 @@ function currentScheduleKhuId(){
 
 function renderScheduleTab(){
   const isKp = state.role && state.role.type === 'kp';
-  const isAdminStaff = state.role === 'admin' || state.role === 'staff';
+  const isAdminStaff = isFullControl();
   const date = state.scheduleDate || todayClamped();
   const schedule = state.scheduleData;
   const dayInfo = schedule ? getDayInfo(schedule, date) : null;
@@ -1602,7 +1853,6 @@ function renderScheduleTab(){
 function renderWeekGridSection(){
   const weekStart = state.gridWeekStart || getMonday(state.scheduleDate || todayClamped());
   const days = [0,1,2,3,4,5,6].map(i=>addDays(weekStart,i));
-  const dayLabels = ['Thứ 2','Thứ 3','Thứ 4','Thứ 5','Thứ 6','Thứ 7','Chủ nhật'];
   const schedule = state.scheduleData;
 
   function cellContent(team, date){
@@ -1618,7 +1868,7 @@ function renderWeekGridSection(){
     }).join('');
   }
 
-  const headerCells = days.map((d,i)=>`<th style="text-align:center;">${dayLabels[i]}<br><span style="font-weight:400;">${formatDateDisplay(d)}</span></th>`).join('');
+  const headerCells = days.map((d)=>`<th style="text-align:center;">${weekdayLabel(d)}<br><span style="font-weight:400;">${formatDateDisplay(d)}</span></th>`).join('');
   const rowTeamIds = (()=>{
     const s = new Set(allTeamIds());
     if(schedule){
@@ -1642,7 +1892,7 @@ function renderWeekGridSection(){
           <button class="btn-primary" id="weekExportBtn">📤 Xuất Excel tuần này</button>
         </div>
       </div>
-      <p class="muted" style="margin-bottom:12px;">Tuần: ${formatDateDisplay(days[0])} – ${formatDateDisplay(days[6])}</p>
+      <p class="muted" style="margin-bottom:12px;">Tuần ${getISOWeekNumber(weekStart)}/${new Date(weekStart+"T00:00:00").getFullYear()}: ${formatDateDisplay(days[0])} – ${formatDateDisplay(days[6])} <button class="edit-link" id="weekTodayBtn" style="margin-left:8px;">Về tuần này</button></p>
       ${!schedule ? `<div class="spinner-wrap"><div class="spinner"></div> Đang tải...</div>` : `
       <div class="table-scroll">
         <table>
@@ -1667,17 +1917,21 @@ function bindWeekGridSection(){
   });
   const exportBtn = document.getElementById('weekExportBtn');
   if(exportBtn) exportBtn.addEventListener('click', handleExportWeeklyExcel);
+  const todayBtn = document.getElementById('weekTodayBtn');
+  if(todayBtn) todayBtn.addEventListener('click', ()=>{
+    state.gridWeekStart = getMonday(todayClamped());
+    render();
+  });
 }
 
 async function handleExportWeeklyExcel(){
   try{
     const weekStart = state.gridWeekStart || getMonday(state.scheduleDate || todayClamped());
     const days = [0,1,2,3,4,5,6].map(i=>addDays(weekStart,i));
-    const dayLabels = ['Thứ 2','Thứ 3','Thứ 4','Thứ 5','Thứ 6','Thứ 7','Chủ nhật'];
     const schedule = state.scheduleData || await loadSchedule();
     const order = {sang:0, chieu:1, toi:2};
 
-    const matrixRows = [["Đoàn", ...days.map((d,i)=>`${dayLabels[i]} ${formatDateDisplay(d)}`)]];
+    const matrixRows = [["Đoàn", ...days.map((d)=>`${weekdayLabel(d)} ${formatDateDisplay(d)}`)]];
     const rowTeamIds = (()=>{
       const s = new Set(allTeamIds());
       Object.values(schedule.regs || {}).forEach(r=>{ if(days.includes(r.date)) s.add(r.team); });
@@ -1695,12 +1949,12 @@ async function handleExportWeeklyExcel(){
     });
 
     const detailRows = [["Ngày","Thứ","Ca","Đoàn","Khu phố","Người đăng ký","SĐT"]];
-    days.forEach((d,i)=>{
+    days.forEach((d)=>{
       const entries = Object.values(schedule.regs || {})
         .filter(r=>r.date===d)
         .sort((a,b)=> order[a.shift]-order[b.shift] || a.team-b.team);
       entries.forEach(e=>{
-        detailRows.push([formatDateDisplay(d), dayLabels[i], SHIFTS.find(s=>s.key===e.shift).label, `Đoàn ${e.team}`, `Khu phố ${e.khuId}`, e.name, e.phone]);
+        detailRows.push([formatDateDisplay(d), weekdayLabel(d), SHIFTS.find(s=>s.key===e.shift).label, `Đoàn ${e.team}`, `Khu phố ${e.khuId}`, e.name, e.phone]);
       });
     });
     if(detailRows.length === 1) detailRows.push(["(Không có đăng ký nào trong tuần này)","","","","","",""]);
@@ -1727,7 +1981,7 @@ async function handleExportWeeklyExcel(){
 function renderTeamManagementSection(){
   const cfg = state.teamsConfig || {};
   const ids = allTeamIds();
-  const todayStr = new Date().toISOString().slice(0,10);
+  const todayStr = toDateStr(new Date());
 
   const rows = ids.map(id=>{
     const t = cfg[id];
@@ -1892,6 +2146,7 @@ function bindScheduleTab(){
     dateInput.addEventListener('change', async ()=>{
       state.scheduleDate = dateInput.value;
       state.scheduleMessage = null;
+      state.gridWeekStart = getMonday(state.scheduleDate);
       await loadScheduleForDate(state.scheduleDate);
     });
   }
@@ -1921,7 +2176,7 @@ function bindScheduleTab(){
     btn.addEventListener('click', ()=> handleScheduleEditLoad(btn.dataset.scheduleEdit));
   });
 
-  if(state.role === 'admin' || state.role === 'staff'){
+  if(isFullControl()){
     bindTeamManagementSection();
     bindWeekGridSection();
   }
@@ -1966,7 +2221,7 @@ async function handleScheduleSubmit(){
       delete schedule.regs[state.scheduleEditId];
     }
     const dayInfo = getDayInfo(schedule, date);
-    const manualTeam = ((state.role === 'admin' || state.role === 'staff') && fv.team) ? Number(fv.team) : null;
+    const manualTeam = ((isFullControl()) && fv.team) ? Number(fv.team) : null;
     let team, exceedsCap = false;
     if(manualTeam){
       if(dayInfo.slots[fv.shift][manualTeam]){
@@ -2025,7 +2280,6 @@ async function handleScheduleDelete(id){
   render();
 }
 
-/* ================= INIT ================= */
 window.addEventListener('unhandledrejection', function(ev){
   console.error('Unhandled rejection:', ev.reason);
   ev.preventDefault();
@@ -2043,6 +2297,25 @@ function showGlobalStorageError(){
   if(state.tab === 'schedule'){ state.scheduleLoading = false; state.scheduleMessage = msg; }
   try{ render(); }catch(e){ /* noop */ }
 }
+/* ================= TỰ ĐỘNG ĐĂNG XUẤT SAU 15 PHÚT KHÔNG HOẠT ĐỘNG ================= */
+const INACTIVITY_LIMIT_MS = 15 * 60 * 1000;
+let inactivityTimer = null;
+function resetInactivityTimer(){
+  if(!state.role) return;
+  clearTimeout(inactivityTimer);
+  inactivityTimer = setTimeout(()=>{
+    if(state.role){
+      logout();
+      state.loginError = "Đã tự động đăng xuất do không hoạt động trong 15 phút.";
+      render();
+    }
+  }, INACTIVITY_LIMIT_MS);
+}
+['click','keydown','mousemove','touchstart','scroll'].forEach(evt=>{
+  document.addEventListener(evt, ()=>{ if(state.role) resetInactivityTimer(); }, {passive:true});
+});
+
+/* ================= INIT ================= */
 render();
 </script>
 </body>
