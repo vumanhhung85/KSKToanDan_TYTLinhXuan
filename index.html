@@ -391,7 +391,9 @@ const DEFAULT_TEAM_IDS = [1,2,3];
 const MAX_SHIFTS_PER_TEAM_PER_DAY = 2;
 const SCHEDULE_KEY = STORE_PREFIX + "schedule";
 const TEAMS_KEY = STORE_PREFIX + "teams";
+const SCHEDULE_LOCK_KEY = STORE_PREFIX + "schedule_lock_kp";
 const ACCOUNTS_KEY = STORE_PREFIX + "accounts";
+const KP_TABS_KEY = STORE_PREFIX + "kp_tabs";
 
 /* ================= STATE ================= */
 let state = {
@@ -425,6 +427,8 @@ let state = {
   scheduleMessage: null,
   scheduleEditId: null,      // when admin/staff editing an existing registration
   gridWeekStart: "",         // Monday date (ISO) of the displayed week grid
+  scheduleLockedForKp: false,
+  kpTabsConfig: null,
   teamsConfig: null,         // {teamId: {id, startDate, endDate}}
   teamFormOpen: false,
   teamForm: {startDate:"", endDate:""},
@@ -518,6 +522,25 @@ async function loadPasswordsMap(){
   }
   state.passwordsMap = map;
   return map;
+}
+
+async function loadKpTabsConfig(){
+  if(state.kpTabsConfig) return state.kpTabsConfig;
+  let raw = await storageGet(KP_TABS_KEY, true);
+  let map;
+  if(raw){ try{ map = JSON.parse(raw); }catch(e){ map = null; } }
+  if(!map) map = {};
+  let changed = false;
+  KHU_IDS.forEach(id=>{
+    if(!map[id]){ map[id] = {report:false, entry:true, schedule:true}; changed = true; }
+  });
+  if(changed) await storageSet(KP_TABS_KEY, JSON.stringify(map), true);
+  state.kpTabsConfig = map;
+  return map;
+}
+async function saveKpTabsConfig(map){
+  await storageSet(KP_TABS_KEY, JSON.stringify(map), true);
+  state.kpTabsConfig = map;
 }
 
 async function loadKhuData(id){
@@ -638,8 +661,9 @@ async function attemptLogin(pw){
         if(map[id] === pw){ matchedId = id; break; }
       }
       if(matchedId){
-        state.role = {type:'kp', id: matchedId};
-        state.tab = 'entry';
+        const kpTabs = await loadKpTabsConfig();
+        state.role = {type:'kp', id: matchedId, tabs: kpTabs[matchedId] || {report:false, entry:true, schedule:true}};
+        state.tab = state.role.tabs.entry ? 'entry' : (state.role.tabs.report ? 'report' : 'schedule');
         state.entryKhuId = matchedId;
       } else {
         state.loginBusy = false;
@@ -650,6 +674,7 @@ async function attemptLogin(pw){
     }
   }
   state.loginBusy = false;
+  await loadScheduleLockState();
   if(state.tab === 'entry'){
     state.entryKhuId = state.entryKhuId || KHU_IDS[0];
     resetForm();
@@ -670,7 +695,8 @@ function logout(){
     bulkMessage:null, bulkFileName:"", exportBusy:false, exportMessage:null,
     scheduleData:null, scheduleLoading:false, scheduleDate:"",
     scheduleForm:{shift:"",name:"",phone:"",khuId:"",team:""}, scheduleFormErrors:{},
-    scheduleMessage:null, scheduleEditId:null, gridWeekStart:"",
+    scheduleMessage:null, scheduleEditId:null, gridWeekStart:"", scheduleLockedForKp: state.scheduleLockedForKp,
+    kpTabsConfig: state.kpTabsConfig,
     teamsConfig: state.teamsConfig, teamFormOpen:false, teamForm:{startDate:"",endDate:""},
     teamEditId:null, teamConfirmDeleteId:null, teamMgmtMessage:null,
     accountsConfig: state.accountsConfig, accountFormOpen:false,
@@ -700,11 +726,19 @@ function availableTabs(){
     if(t.schedule) tabs.push(['schedule','Đăng ký lịch khám']);
     return tabs;
   }
-  return [['entry','Nhập liệu hằng ngày'],['schedule','Đăng ký lịch khám']];
+  const t = (state.role && state.role.tabs) || {report:false, entry:true, schedule:true};
+  const tabs = [];
+  if(t.report) tabs.push(['report','Báo cáo tổng']);
+  if(t.entry) tabs.push(['entry','Nhập liệu hằng ngày']);
+  if(t.schedule && !state.scheduleLockedForKp) tabs.push(['schedule','Đăng ký lịch khám']);
+  return tabs;
 }
 
 function renderShell(){
   const tabs = availableTabs();
+  if(tabs.length && !tabs.some(t=>t[0]===state.tab)){
+    state.tab = tabs[0][0];
+  }
   return `
     <div class="masthead">
       <div class="masthead-left">
@@ -1337,74 +1371,67 @@ function bindReportTab(){
 
 /* ================= PASSWORD TAB (admin only) ================= */
 function renderPasswordTab(){
-  const map = state.passwordsMap || {};
-  const rows = KHU_IDS.map(id=>{
-    const current = map[id] || ("kp"+id);
-    const editVal = state.pwEdits[id] !== undefined ? state.pwEdits[id] : current;
-    const msg = state.pwMsgs[id];
-    return `
-      <tr>
-        <td class="name-cell">Khu phố ${id}</td>
-        <td style="text-align:left;">
-          <span class="muted">Mật mã hiện tại: <b style="color:var(--green-dark);">${escapeHtml(current)}</b></span>
-        </td>
-        <td style="text-align:left;">
-          <input type="text" id="pwEdit_${id}" value="${escapeHtml(editVal)}">
-        </td>
-        <td style="text-align:center;">
-          <button class="btn-secondary" data-save-pw="${id}">Lưu</button>
-          <button class="btn-secondary" data-reset-pw="${id}" style="margin-left:6px;">Mặc định</button>
-          ${msg ? `<div class="pw-row-msg">${escapeHtml(msg)}</div>` : ''}
-        </td>
-      </tr>`;
-  }).join('');
-
-  return `
-    <div class="card">
-      <h3>🔑 Đổi mật mã khu phố</h3>
-      <p class="muted" style="margin-bottom:14px;">Dùng để cấp lại mật mã khi khu phố quên. Mật mã mặc định theo quy tắc: kp + số thứ tự khu phố.</p>
-      <div class="table-scroll">
-        <table class="pw-table">
-          <thead><tr><th class="name-cell">Khu phố</th><th style="text-align:left;">Hiện tại</th><th style="text-align:left;">Mật mã mới</th><th>Thao tác</th></tr></thead>
-          <tbody>${rows}</tbody>
-        </table>
-      </div>
-    </div>
-    ${renderAccountsSection()}
-  `;
+  return renderAccountsSection();
 }
 
 async function afterPasswordTabShown(){
   await loadPasswordsMap();
+  await loadKpTabsConfig();
   await loadAccountsConfig();
   render();
 }
 
 function renderAccountsSection(){
   const accounts = state.accountsConfig || {};
-  const keys = Object.keys(accounts);
+  const accountKeys = Object.keys(accounts);
+  const pwMap = state.passwordsMap || {};
+  const kpTabs = state.kpTabsConfig || {};
   const TAB_LABELS_VN = {report:'Báo cáo tổng', entry:'Nhập liệu hằng ngày', schedule:'Đăng ký lịch khám'};
-  const rows2 = keys.map(key=>{
+
+  function tabsLabelOf(tabsObj){
+    return ['report','entry','schedule'].filter(t=>tabsObj && tabsObj[t]).map(t=>TAB_LABELS_VN[t]).join(', ') || '— (chưa cấp quyền)';
+  }
+
+  const kpRows = KHU_IDS.map(id=>{
+    const editKey = `kp:${id}`;
+    const isPendingDelete = state.accountConfirmDeleteKey === editKey;
+    const t = kpTabs[id] || {report:false, entry:true, schedule:true};
+    const actionCell = isPendingDelete
+      ? `<span class="muted">Khôi phục mặc định?</span><button class="edit-link edit-link-danger" data-account-confirm-delete="${editKey}">Xác nhận</button><button class="edit-link" data-account-cancel-delete="${editKey}">Hủy</button>`
+      : `<button class="edit-link" data-account-edit="${editKey}">Sửa</button><button class="edit-link edit-link-danger" data-account-delete="${editKey}">Mặc định</button>`;
+    return `<tr>
+      <td style="text-align:left;">Khu phố ${id}</td>
+      <td style="text-align:left;"><b style="color:var(--green-dark);">${escapeHtml(pwMap[id] || ("kp"+id))}</b></td>
+      <td style="text-align:left;">${tabsLabelOf(t)}</td>
+      <td style="text-align:center;"><div class="action-cell">${actionCell}</div></td>
+    </tr>`;
+  }).join('');
+
+  const acctRows = accountKeys.map(key=>{
     const acc = accounts[key];
     const isPendingDelete = state.accountConfirmDeleteKey === key;
-    const tabsLabel = ['report','entry','schedule'].filter(t=>acc.tabs && acc.tabs[t]).map(t=>TAB_LABELS_VN[t]).join(', ') || '— (chưa cấp quyền)';
     const actionCell = isPendingDelete
       ? `<span class="muted">Xóa?</span><button class="edit-link edit-link-danger" data-account-confirm-delete="${escapeHtml(key)}">Xác nhận</button><button class="edit-link" data-account-cancel-delete="${escapeHtml(key)}">Hủy</button>`
       : `<button class="edit-link" data-account-edit="${escapeHtml(key)}">Sửa</button><button class="edit-link edit-link-danger" data-account-delete="${escapeHtml(key)}">Xóa</button>`;
     return `<tr>
       <td style="text-align:left;">${escapeHtml(acc.label)}</td>
       <td style="text-align:left;"><b style="color:var(--green-dark);">${escapeHtml(key)}</b></td>
-      <td style="text-align:left;">${tabsLabel}</td>
+      <td style="text-align:left;">${tabsLabelOf(acc.tabs)}</td>
       <td style="text-align:center;"><div class="action-cell">${actionCell}</div></td>
     </tr>`;
   }).join('');
 
   const fv = state.accountForm;
+  const isEditingKp = state.accountEditKey && state.accountEditKey.startsWith('kp:');
+  const labelField = isEditingKp
+    ? `<div style="font-weight:700;color:var(--green-dark);padding-top:8px;">Khu phố ${state.accountEditKey.slice(3)}</div>`
+    : `<input type="text" id="accountLabelInput" value="${escapeHtml(fv.label)}">`;
+
   const formBlock = state.accountFormOpen ? `
     <div class="field-row" style="margin-top:14px;">
       <div class="field">
         <label>Tên hiển thị</label>
-        <input type="text" id="accountLabelInput" value="${escapeHtml(fv.label)}">
+        ${labelField}
       </div>
       <div class="field">
         <label>Mật mã</label>
@@ -1429,11 +1456,11 @@ function renderAccountsSection(){
   return `
     <div class="card">
       <h3>👤 Quản lý mật mã & phân quyền</h3>
-      <p class="muted" style="margin-bottom:12px;">Thêm mật mã mới và chọn những tab mà mật mã đó được phép xem (Báo cáo tổng / Nhập liệu hằng ngày / Đăng ký lịch khám). Mật mã <b>admin@2026</b> là cố định, không hiển thị/sửa được ở đây.</p>
+      <p class="muted" style="margin-bottom:12px;">Đổi mật mã và chọn tab được phép xem cho từng mật mã — bao gồm cả 18 khu phố và các mật mã khác. Ví dụ: có thể cho Khu phố 1 xem thêm tab Báo cáo tổng. Mật mã <b>admin@2026</b> là cố định, không hiển thị/sửa được ở đây.</p>
       <div class="table-scroll">
         <table>
           <thead><tr><th style="text-align:left;">Tên hiển thị</th><th style="text-align:left;">Mật mã</th><th style="text-align:left;">Được xem tab</th><th>Thao tác</th></tr></thead>
-          <tbody>${rows2}</tbody>
+          <tbody>${kpRows}${acctRows}</tbody>
         </table>
       </div>
       ${formBlock}
@@ -1473,11 +1500,17 @@ function bindAccountsSection(){
   document.querySelectorAll('[data-account-edit]').forEach(btn=>{
     btn.addEventListener('click', ()=>{
       const key = btn.dataset.accountEdit;
-      const acc = state.accountsConfig[key];
       state.accountEditKey = key;
       state.accountFormOpen = true;
-      state.accountForm = {password: key, label: acc.label, tabs: {report:!!acc.tabs.report, entry:!!acc.tabs.entry, schedule:!!acc.tabs.schedule}};
       state.accountMgmtMessage = null;
+      if(key.startsWith('kp:')){
+        const id = Number(key.slice(3));
+        const t = (state.kpTabsConfig && state.kpTabsConfig[id]) || {report:false, entry:true, schedule:true};
+        state.accountForm = {password: (state.passwordsMap && state.passwordsMap[id]) || ("kp"+id), label: `Khu phố ${id}`, tabs: {report:!!t.report, entry:!!t.entry, schedule:!!t.schedule}};
+      } else {
+        const acc = state.accountsConfig[key];
+        state.accountForm = {password: key, label: acc.label, tabs: {report:!!acc.tabs.report, entry:!!acc.tabs.entry, schedule:!!acc.tabs.schedule}};
+      }
       render();
     });
   });
@@ -1507,6 +1540,29 @@ async function handleSaveAccount(){
     return;
   }
   await loadPasswordsMap();
+  await loadAccountsConfig();
+
+  if(state.accountEditKey && state.accountEditKey.startsWith('kp:')){
+    const id = Number(state.accountEditKey.slice(3));
+    if(isPasswordTaken(newPw, {khuId: id})){
+      state.accountMgmtMessage = {type:'err', text:'Mật mã này đã được dùng cho tài khoản khác. Vui lòng chọn mật mã khác.'};
+      render();
+      return;
+    }
+    const pwMap = await loadPasswordsMap();
+    pwMap[id] = newPw;
+    await storageSet(STORE_PREFIX+"passwords", JSON.stringify(pwMap), true);
+    state.passwordsMap = pwMap;
+    const kpTabsMap = await loadKpTabsConfig();
+    kpTabsMap[id] = {report:!!fv.tabs.report, entry:!!fv.tabs.entry, schedule:!!fv.tabs.schedule};
+    await saveKpTabsConfig(kpTabsMap);
+    state.accountFormOpen = false;
+    state.accountEditKey = null;
+    state.accountMgmtMessage = {type:'ok', text: `Đã cập nhật Khu phố ${id}.`};
+    render();
+    return;
+  }
+
   const accounts = await loadAccountsConfig();
   const excludeKey = state.accountEditKey || undefined;
   if(isPasswordTaken(newPw, {accountKey: excludeKey})){
@@ -1526,6 +1582,28 @@ async function handleSaveAccount(){
 }
 
 async function handleDeleteAccount(key){
+  if(key.startsWith('kp:')){
+    const id = Number(key.slice(3));
+    const defaultPw = "kp"+id;
+    await loadAccountsConfig();
+    if(isPasswordTaken(defaultPw, {khuId: id})){
+      state.accountConfirmDeleteKey = null;
+      state.accountMgmtMessage = {type:'err', text:`Không thể khôi phục vì mật mã mặc định "${defaultPw}" đang trùng với tài khoản khác.`};
+      render();
+      return;
+    }
+    const pwMap = await loadPasswordsMap();
+    pwMap[id] = defaultPw;
+    await storageSet(STORE_PREFIX+"passwords", JSON.stringify(pwMap), true);
+    state.passwordsMap = pwMap;
+    const kpTabs = await loadKpTabsConfig();
+    kpTabs[id] = {report:false, entry:true, schedule:true};
+    await saveKpTabsConfig(kpTabs);
+    state.accountConfirmDeleteKey = null;
+    state.accountMgmtMessage = {type:'ok', text:`Đã khôi phục Khu phố ${id} về mật mã và phân quyền mặc định.`};
+    render();
+    return;
+  }
   const accounts = await loadAccountsConfig();
   delete accounts[key];
   await saveAccountsConfig(accounts);
@@ -1535,53 +1613,17 @@ async function handleDeleteAccount(key){
 }
 
 function bindPasswordTab(){
-  KHU_IDS.forEach(id=>{
-    const input = document.getElementById('pwEdit_'+id);
-    if(input){
-      input.addEventListener('input', e=>{ state.pwEdits[id] = e.target.value; });
-    }
-  });
-  document.querySelectorAll('[data-save-pw]').forEach(btn=>{
-    btn.addEventListener('click', async ()=>{
-      const id = btn.dataset.savePw;
-      const input = document.getElementById('pwEdit_'+id);
-      const newPw = (input.value||"").trim();
-      if(!newPw){ state.pwMsgs[id] = "Mật mã không được để trống."; render(); return; }
-      await loadAccountsConfig();
-      if(isPasswordTaken(newPw, {khuId: id})){
-        state.pwMsgs[id] = "Mật mã này đã được dùng cho tài khoản khác. Vui lòng chọn mật mã khác.";
-        render();
-        return;
-      }
-      const map = await loadPasswordsMap();
-      map[id] = newPw;
-      await storageSet(STORE_PREFIX+"passwords", JSON.stringify(map), true);
-      state.passwordsMap = map;
-      delete state.pwEdits[id];
-      state.pwMsgs[id] = "Đã cập nhật mật mã mới.";
-      render();
-    });
-  });
-  document.querySelectorAll('[data-reset-pw]').forEach(btn=>{
-    btn.addEventListener('click', async ()=>{
-      const id = btn.dataset.resetPw;
-      const defaultPw = "kp"+id;
-      await loadAccountsConfig();
-      if(isPasswordTaken(defaultPw, {khuId: id})){
-        state.pwMsgs[id] = `Không thể khôi phục vì mật mã mặc định "${defaultPw}" đang trùng với tài khoản khác.`;
-        render();
-        return;
-      }
-      const map = await loadPasswordsMap();
-      map[id] = defaultPw;
-      await storageSet(STORE_PREFIX+"passwords", JSON.stringify(map), true);
-      state.passwordsMap = map;
-      delete state.pwEdits[id];
-      state.pwMsgs[id] = "Đã khôi phục mật mã mặc định.";
-      render();
-    });
-  });
   bindAccountsSection();
+}
+
+async function loadScheduleLockState(){
+  const raw = await storageGet(SCHEDULE_LOCK_KEY, true);
+  state.scheduleLockedForKp = (raw === "true");
+  return state.scheduleLockedForKp;
+}
+async function setScheduleLockState(locked){
+  await storageSet(SCHEDULE_LOCK_KEY, locked ? "true" : "false", true);
+  state.scheduleLockedForKp = locked;
 }
 
 async function loadTeamsConfig(){
@@ -1683,6 +1725,7 @@ async function afterScheduleTabShown(){
   state.scheduleMessage = null;
   if(!state.scheduleDate) state.scheduleDate = todayClamped();
   if(!state.gridWeekStart) state.gridWeekStart = getMonday(state.scheduleDate);
+  await loadScheduleLockState();
   await loadTeamsConfig();
   await loadScheduleForDate(state.scheduleDate);
 }
@@ -1847,7 +1890,7 @@ function renderScheduleTab(){
     `;
   }
 
-  return formCard + listCard + (isAdminStaff ? renderTeamManagementSection() + renderWeekGridSection() : '');
+  return (state.role === 'admin' ? renderScheduleLockSection() : '') + formCard + listCard + (isAdminStaff ? renderTeamManagementSection() + renderWeekGridSection() : '');
 }
 
 function renderWeekGridSection(){
@@ -2131,6 +2174,30 @@ async function handleDeleteTeam(id){
   render();
 }
 
+function renderScheduleLockSection(){
+  const locked = !!state.scheduleLockedForKp;
+  return `
+    <div class="card">
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
+        <div>
+          <h3 style="margin:0 0 4px;">${locked ? '🔒' : '🔓'} Đăng ký lịch khám của khu phố</h3>
+          <p class="muted" style="margin:0;">${locked
+            ? 'Đang KHOÁ — mật mã khu phố không thấy tab "Đăng ký lịch khám" (chỉ áp dụng cho mật mã khu phố, không ảnh hưởng admin/mật mã khác).'
+            : 'Đang MỞ — khu phố có thể tự vào tab "Đăng ký lịch khám" để đăng ký/hủy lịch.'}</p>
+        </div>
+        <button class="btn-primary" id="scheduleLockToggleBtn">${locked ? '🔓 Mở lại cho khu phố' : '🔒 Khoá lại với khu phố'}</button>
+      </div>
+    </div>
+  `;
+}
+function bindScheduleLockSection(){
+  const btn = document.getElementById('scheduleLockToggleBtn');
+  if(btn) btn.addEventListener('click', async ()=>{
+    await setScheduleLockState(!state.scheduleLockedForKp);
+    render();
+  });
+}
+
 function resetScheduleForm(){
   state.scheduleForm = {shift:"", name:"", phone:"", khuId:"", team:""};
   state.scheduleFormErrors = {};
@@ -2180,6 +2247,7 @@ function bindScheduleTab(){
     bindTeamManagementSection();
     bindWeekGridSection();
   }
+  if(state.role === 'admin') bindScheduleLockSection();
 }
 
 function handleScheduleEditLoad(id){
@@ -2219,6 +2287,12 @@ async function handleScheduleSubmit(){
     const schedule = await loadSchedule();
     if(state.scheduleEditId){
       delete schedule.regs[state.scheduleEditId];
+    }
+    const duplicateForKhu = Object.values(schedule.regs || {}).find(r=> r.khuId === khuId && r.date === date && r.shift === fv.shift);
+    if(duplicateForKhu){
+      state.scheduleMessage = {type:'err', text:`Khu phố ${khuId} đã có Đoàn ${duplicateForKhu.team} khám vào ${shiftLabel(fv.shift)} ngày ${formatDateDisplay(date)} rồi. Mỗi khu phố chỉ được 1 đoàn khám trong 1 ca.`};
+      render();
+      return;
     }
     const dayInfo = getDayInfo(schedule, date);
     const manualTeam = ((isFullControl()) && fv.team) ? Number(fv.team) : null;
