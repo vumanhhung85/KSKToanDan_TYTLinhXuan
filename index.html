@@ -112,26 +112,33 @@
   /* ---------- TABS ---------- */
   .tabbar{
     display:flex;
-    gap:4px;
+    gap:6px;
     background:var(--paper);
-    padding:0 18px;
+    padding:8px 18px 0;
     border-bottom:1px solid var(--line);
     overflow-x:auto;
   }
   .tabbtn{
     border:none;
-    background:transparent;
-    padding:14px 18px;
+    background:#eef2ef;
+    padding:12px 20px;
     font-size:14px;
-    font-weight:600;
+    font-weight:700;
     color:var(--ink-soft);
     cursor:pointer;
-    border-bottom:3px solid transparent;
+    border:1.5px solid transparent;
+    border-bottom:none;
+    border-radius:10px 10px 0 0;
     white-space:nowrap;
+    transition:background .15s, color .15s;
   }
+  .tabbtn:hover{background:#e2e9e4; color:var(--green-dark);}
   .tabbtn.active{
+    background:var(--paper);
     color:var(--green-dark);
-    border-bottom-color:var(--red);
+    border-color:var(--line);
+    border-bottom:3px solid var(--red);
+    box-shadow:0 -2px 8px rgba(15,81,50,0.08);
   }
 
   .content{
@@ -825,7 +832,7 @@ async function loadBulkDataForDate(date){
   results.forEach(({id, rec})=>{
     if(rec){
       values[id] = {phat:String(rec.phat), thu:String(rec.thu), kham:String(rec.kham)};
-      meta[id] = {editable: isWithinEditWindow(rec.enteredAt), enteredAt: rec.enteredAt};
+      meta[id] = {editable: state.role === 'admin' || isWithinEditWindow(rec.enteredAt), enteredAt: rec.enteredAt};
     } else {
       values[id] = {phat:"", thu:"", kham:""};
       meta[id] = {editable:true, enteredAt:null};
@@ -1086,7 +1093,7 @@ function renderEntryTab(){
     .slice(0,20)
     .map(([date,r])=>{
       const rDat = pop ? (Number(r.kham)||0)/pop*100 : 0;
-      const editable = isWithinEditWindow(r.enteredAt);
+      const editable = state.role === 'admin' || isWithinEditWindow(r.enteredAt);
       const actionCell = editable
         ? `<button class="edit-link" data-edit-date="${date}">Sửa</button>`
         : `<span class="muted">Hết hạn sửa</span>`;
@@ -1206,7 +1213,7 @@ function bindEntryTab(){
       const date = btn.dataset.editDate;
       const id = currentEntryKhuId();
       const rec = entryDataCache[id].records[date];
-      if(!isWithinEditWindow(rec.enteredAt)){
+      if(state.role !== 'admin' && !isWithinEditWindow(rec.enteredAt)){
         state.saveMessage = {type:'err', text:'Đã quá 48 giờ kể từ lúc nhập, không thể sửa dữ liệu ngày này.'};
         render();
         return;
@@ -1246,7 +1253,7 @@ async function handleSaveEntry(){
   const existing = data.records[fv.date];
   const isOverwrite = !!existing;
 
-  if(isOverwrite && !isWithinEditWindow(existing.enteredAt)){
+  if(isOverwrite && state.role !== 'admin' && !isWithinEditWindow(existing.enteredAt)){
     state.saveMessage = {type:'err', text:'Đã quá 48 giờ kể từ lúc nhập, không thể sửa dữ liệu ngày này.'};
     render();
     return;
