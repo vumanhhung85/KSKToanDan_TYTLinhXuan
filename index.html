@@ -6,7 +6,7 @@
 <title>Theo dõi khám sức khoẻ tại khu phố - Phường Linh Xuân</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700;800&family=Roboto+Condensed:wght@600;700&display=swap" rel="stylesheet">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
 <style>
   :root{
     --green-dark:#0f5132;
@@ -362,9 +362,55 @@
   footer b{color:var(--green-dark);}
 
   @media (max-width:640px){
-    .masthead-title h1{font-size:15px;}
-    .content{padding:14px;}
-    .card{padding:16px;}
+    body{font-size:14px;}
+    .masthead{padding:10px 12px; gap:8px;}
+    .masthead-left{gap:8px;}
+    .masthead-left img{height:38px; width:38px;}
+    .masthead-title h1{font-size:13px; line-height:1.2;}
+    .masthead-title p{font-size:10px;}
+    .masthead-right{gap:6px;}
+    .role-chip{padding:5px 9px; font-size:11px;}
+    .btn-logout{padding:7px 11px; font-size:12px;}
+
+    .tabbar{padding:6px 8px 0; gap:4px;}
+    .tabbtn{padding:9px 12px; font-size:12.5px;}
+
+    .content{padding:10px;}
+    .card{padding:12px; border-radius:10px; margin-bottom:14px;}
+    .card h3{font-size:14px;}
+
+    .field-row{gap:10px;}
+    .field{min-width:0; flex:1 1 100%; margin-bottom:10px;}
+    .field label{font-size:11px;}
+    .field input, .khu-select, select, input[type=date], input[type=text], input[type=password], input[type=number]{
+      font-size:16px !important; /* tránh iOS tự zoom khi bấm vào ô nhập */
+      padding:9px 10px;
+    }
+    .btn-primary, .btn-secondary{padding:10px 14px; font-size:13px;}
+
+    table{font-size:12px;}
+    th,td{padding:7px 6px;}
+    th{font-size:9.5px;}
+    .rank-badge{width:20px; height:20px; font-size:10px;}
+    .dat-bar-wrap{width:44px;}
+    .dat-bar-label{min-width:38px; font-size:12px;}
+    .action-cell{gap:6px; flex-direction:column;}
+    .bulk-table input{width:60px; padding:5px 6px; font-size:12px;}
+    .khu-name{font-size:12px;}
+
+    .login-card{padding:26px 20px;}
+    .login-card img{height:60px; width:60px;}
+
+    footer{font-size:11px; padding:12px;}
+
+    .scroll-hint::after{
+      content:"⟷ Vuốt ngang để xem thêm";
+      display:block;
+      text-align:center;
+      font-size:10.5px;
+      color:var(--ink-soft);
+      padding:4px 0 0;
+    }
   }
 </style>
 </head>
@@ -954,7 +1000,7 @@ function renderBulkSection(){
       </div>
       ${state.bulkMessage ? `<div class="banner ${state.bulkMessage.type}">${escapeHtml(state.bulkMessage.text)}</div>` : ''}
       ${state.bulkLoading ? `<div class="spinner-wrap"><div class="spinner"></div> Đang tải dữ liệu ngày ${formatDateDisplay(date)}...</div>` : `
-      <div class="table-scroll">
+      <div class="table-scroll scroll-hint">
         <table class="bulk-table">
           <thead><tr><th class="khu-name" style="text-align:center;">Khu phố</th><th>Phát phiếu</th><th>Thu về</th><th>Khám</th></tr></thead>
           <tbody>${rows}</tbody>
@@ -1005,47 +1051,125 @@ async function handleExportExcel(){
       return {id, data};
     }));
 
-    // Sheet 1: Tổng hợp (giống báo cáo tổng)
-    const summaryRows = [["STT","Khu phố (Tổ)","Dân số","Phát phiếu","Thu về","Khám","Đạt (%)"]];
+    // ----- Tính toán số liệu tổng hợp, SẮP XẾP THEO KHÁM GIẢM DẦN -----
     let totalPop=0, totalPhat=0, totalThu=0, totalKham=0;
-    const summaryCalc = results.map(({id, data})=>{
+    let summaryCalc = results.map(({id, data})=>{
       const t = computeTotals(data.records);
       const pop = POPULATION[id];
       const dat = pop ? (t.kham/pop*100) : 0;
       totalPop+=pop; totalPhat+=t.phat; totalThu+=t.thu; totalKham+=t.kham;
       return {id, pop, ...t, dat};
     });
-    summaryCalc.forEach(r=>{
-      summaryRows.push([r.id, "Khu phố "+r.id, r.pop, r.phat, r.thu, r.kham, Number(r.dat.toFixed(2))]);
+    summaryCalc.sort((a,b)=> b.kham - a.kham);
+    let rankMap = {};
+    summaryCalc.forEach((r,idx)=>{
+      rankMap[r.id] = (idx>0 && summaryCalc[idx-1].kham === r.kham) ? rankMap[summaryCalc[idx-1].id] : idx+1;
     });
     const totalDat = totalPop ? (totalKham/totalPop*100) : 0;
-    summaryRows.push(["","TỔNG CỘNG", totalPop, totalPhat, totalThu, totalKham, Number(totalDat.toFixed(2))]);
 
-    // Sheet 2: Chi tiết theo ngày (đầy đủ nhất, phục vụ sao lưu)
-    const detailRows = [["Khu phố (Tổ)","Ngày","Phát phiếu","Thu về","Khám","Đạt (%)"]];
+    // ----- Style dùng chung -----
+    const COLOR_GREEN_DARK = "0F5132", COLOR_GREEN_LIGHT = "E8F4EC", COLOR_CREAM = "F7F6F1", COLOR_WHITE = "FFFFFF", COLOR_RED = "C62828";
+    const thin = {style:"thin", color:{rgb:"D9D9D9"}};
+    const border = {top:thin, bottom:thin, left:thin, right:thin};
+    const titleStyle = {font:{bold:true, sz:14, color:{rgb:COLOR_WHITE}}, fill:{fgColor:{rgb:COLOR_GREEN_DARK}}, alignment:{horizontal:"center", vertical:"center"}};
+    const subtitleStyle = {font:{italic:true, sz:10, color:{rgb:"5B6B60"}}, alignment:{horizontal:"left"}};
+    const headerStyle = {font:{bold:true, sz:11, color:{rgb:COLOR_WHITE}}, fill:{fgColor:{rgb:COLOR_GREEN_DARK}}, alignment:{horizontal:"center", vertical:"center", wrapText:true}, border};
+    const cellCenter = {alignment:{horizontal:"center", vertical:"center"}, border};
+    const cellRight = {alignment:{horizontal:"right", vertical:"center"}, border};
+    const cellLeft = {alignment:{horizontal:"left", vertical:"center"}, border};
+    const totalStyle = {font:{bold:true, color:{rgb:COLOR_GREEN_DARK}}, fill:{fgColor:{rgb:COLOR_GREEN_LIGHT}}, border};
+    const totalCenter = {...totalStyle, alignment:{horizontal:"center", vertical:"center"}};
+    const totalRight = {...totalStyle, alignment:{horizontal:"right", vertical:"center"}};
+    function zebra(idx){ return idx % 2 === 1 ? {fill:{fgColor:{rgb:COLOR_CREAM}}} : {}; }
+    function rankFont(rank){
+      if(rank===1) return {font:{bold:true, color:{rgb:"9A7B0A"}}};
+      if(rank===2) return {font:{bold:true, color:{rgb:"6B7280"}}};
+      if(rank===3) return {font:{bold:true, color:{rgb:"9C5A2E"}}};
+      return {font:{color:{rgb:"5B6B60"}}};
+    }
+
+    function setCell(ws, r, c, v, style){
+      const addr = XLSX.utils.encode_cell({r, c});
+      ws[addr] = {v, t: (typeof v === 'number') ? 'n' : 's', s: style};
+    }
+    function mergeStyle(a, b){ return {...a, ...b, font:{...(a.font||{}), ...(b.font||{})}, alignment:{...(a.alignment||{}), ...(b.alignment||{})}}; }
+
+    // ===== SHEET 1: TỔNG HỢP =====
+    const ws1 = {};
+    const now = new Date();
+    setCell(ws1, 0, 0, "BÁO CÁO TỔNG HỢP — THEO DÕI KHÁM SỨC KHOẺ KHU PHỐ — PHƯỜNG LINH XUÂN", titleStyle);
+    setCell(ws1, 1, 0, `Xuất lúc: ${formatDateDisplay(toDateStr(now))} ${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}  —  Sắp xếp theo KHÁM (giảm dần)`, subtitleStyle);
+
+    const headers1 = ["Thứ hạng","Khu phố (Tổ)","Dân số","Phát phiếu","Thu về","Khám","Đạt (%)"];
+    headers1.forEach((h,c)=> setCell(ws1, 3, c, h, headerStyle));
+
+    summaryCalc.forEach((r, idx)=>{
+      const row = 4 + idx;
+      const z = zebra(idx);
+      setCell(ws1, row, 0, rankMap[r.id], mergeStyle(cellCenter, mergeStyle(z, rankFont(rankMap[r.id]))));
+      setCell(ws1, row, 1, "Khu phố "+r.id, mergeStyle(cellCenter, z));
+      setCell(ws1, row, 2, r.pop, mergeStyle(cellRight, z));
+      setCell(ws1, row, 3, r.phat, mergeStyle(cellRight, z));
+      setCell(ws1, row, 4, r.thu, mergeStyle(cellRight, z));
+      setCell(ws1, row, 5, r.kham, mergeStyle(cellRight, z));
+      setCell(ws1, row, 6, Number(r.dat.toFixed(2)), mergeStyle(cellRight, z));
+    });
+    const totalRow1 = 4 + summaryCalc.length;
+    setCell(ws1, totalRow1, 0, "", totalCenter);
+    setCell(ws1, totalRow1, 1, "TỔNG CỘNG", totalStyle);
+    setCell(ws1, totalRow1, 2, totalPop, totalRight);
+    setCell(ws1, totalRow1, 3, totalPhat, totalRight);
+    setCell(ws1, totalRow1, 4, totalThu, totalRight);
+    setCell(ws1, totalRow1, 5, totalKham, totalRight);
+    setCell(ws1, totalRow1, 6, Number(totalDat.toFixed(2)), totalRight);
+
+    ws1['!ref'] = XLSX.utils.encode_range({s:{r:0,c:0}, e:{r:totalRow1, c:6}});
+    ws1['!merges'] = [{s:{r:0,c:0}, e:{r:0,c:6}}, {s:{r:1,c:0}, e:{r:1,c:6}}];
+    ws1['!cols'] = [{wch:10},{wch:16},{wch:12},{wch:14},{wch:12},{wch:12},{wch:12}];
+    ws1['!rows'] = [{hpt:26},{hpt:18},{hpt:6}];
+
+    // ===== SHEET 2: CHI TIẾT THEO NGÀY =====
+    const ws2 = {};
+    setCell(ws2, 0, 0, "CHI TIẾT NHẬP LIỆU THEO TỪNG NGÀY — TỪNG KHU PHỐ", titleStyle);
+    setCell(ws2, 1, 0, `Xuất lúc: ${formatDateDisplay(toDateStr(now))} ${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`, subtitleStyle);
+    const headers2 = ["Khu phố (Tổ)","Ngày","Phát phiếu","Thu về","Khám","Đạt (%)"];
+    headers2.forEach((h,c)=> setCell(ws2, 3, c, h, headerStyle));
+
+    let detailRowIdx = 0;
     results.forEach(({id, data})=>{
       const pop = POPULATION[id];
       const dates = Object.keys(data.records).sort();
       dates.forEach(date=>{
         const r = data.records[date];
         const rDat = pop ? ((Number(r.kham)||0)/pop*100) : 0;
-        detailRows.push(["Khu phố "+id, formatDateDisplay(date), r.phat, r.thu, r.kham, Number(rDat.toFixed(2))]);
+        const row = 4 + detailRowIdx;
+        const z = zebra(detailRowIdx);
+        setCell(ws2, row, 0, "Khu phố "+id, mergeStyle(cellCenter, z));
+        setCell(ws2, row, 1, formatDateDisplay(date), mergeStyle(cellCenter, z));
+        setCell(ws2, row, 2, r.phat, mergeStyle(cellRight, z));
+        setCell(ws2, row, 3, r.thu, mergeStyle(cellRight, z));
+        setCell(ws2, row, 4, r.kham, mergeStyle(cellRight, z));
+        setCell(ws2, row, 5, Number(rDat.toFixed(2)), mergeStyle(cellRight, z));
+        detailRowIdx++;
       });
     });
-    if(detailRows.length === 1) detailRows.push(["(Chưa có dữ liệu nào được nhập)","","","","",""]);
+    if(detailRowIdx === 0){
+      setCell(ws2, 4, 0, "(Chưa có dữ liệu nào được nhập)", cellLeft);
+      detailRowIdx = 1;
+    }
+    ws2['!ref'] = XLSX.utils.encode_range({s:{r:0,c:0}, e:{r:3+detailRowIdx, c:5}});
+    ws2['!merges'] = [{s:{r:0,c:0}, e:{r:0,c:5}}, {s:{r:1,c:0}, e:{r:1,c:5}}];
+    ws2['!cols'] = [{wch:16},{wch:14},{wch:14},{wch:12},{wch:12},{wch:12}];
+    ws2['!rows'] = [{hpt:26},{hpt:18},{hpt:6}];
 
     const wb = XLSX.utils.book_new();
-    const ws1 = XLSX.utils.aoa_to_sheet(summaryRows);
-    ws1['!cols'] = [{wch:6},{wch:16},{wch:12},{wch:14},{wch:12},{wch:12},{wch:12}];
     XLSX.utils.book_append_sheet(wb, ws1, "Tổng hợp");
-
-    const ws2 = XLSX.utils.aoa_to_sheet(detailRows);
-    ws2['!cols'] = [{wch:16},{wch:14},{wch:14},{wch:12},{wch:12},{wch:12}];
     XLSX.utils.book_append_sheet(wb, ws2, "Chi tiết theo ngày");
 
-    const now = new Date();
-    const stamp = now.getFullYear()+String(now.getMonth()+1).padStart(2,'0')+String(now.getDate()).padStart(2,'0')+"-"+String(now.getHours()).padStart(2,'0')+String(now.getMinutes()).padStart(2,'0');
-    XLSX.writeFile(wb, `sao-luu-kham-suc-khoe-linh-xuan-${stamp}.xlsx`);
+    const dd = String(now.getDate()).padStart(2,'0');
+    const mm = String(now.getMonth()+1).padStart(2,'0');
+    const yyyy = now.getFullYear();
+    XLSX.writeFile(wb, `Báo cáo khám Khu phố _ Phường Linh Xuân ${dd}-${mm}-${yyyy}.xlsx`);
 
     state.exportMessage = {type:'ok', text:'Đã xuất file Excel tổng thành công. Kiểm tra thư mục Tải xuống (Downloads) của trình duyệt.'};
   }catch(err){
@@ -1325,7 +1449,7 @@ function renderReportTab(){
         </div>
       </div>
       <p class="muted" style="margin-bottom:14px;">Đạt (%) = Khám / Dân số khu phố × 100 — tức tỷ lệ số người đã được khám trên tổng dân số của khu phố đó.</p>
-      <div class="table-scroll report-scroll">
+      <div class="table-scroll report-scroll scroll-hint">
         <table>
           <thead>
             <tr>
@@ -1485,7 +1609,7 @@ function renderAccountsSection(){
     <div class="card">
       <h3>👤 Quản lý mật mã & phân quyền</h3>
       <p class="muted" style="margin-bottom:12px;">Đổi mật mã và chọn tab được phép xem cho từng mật mã — bao gồm cả 18 khu phố và các mật mã khác. Ví dụ: có thể cho Khu phố 1 xem thêm tab Báo cáo tổng. Mật mã <b>admin@2026</b> là cố định, không hiển thị/sửa được ở đây.</p>
-      <div class="table-scroll">
+      <div class="table-scroll scroll-hint">
         <table>
           <thead><tr><th style="text-align:left;">Tên hiển thị</th><th style="text-align:left;">Mật mã</th><th style="text-align:left;">Được xem tab</th><th>Thao tác</th></tr></thead>
           <tbody>${kpRows}${acctRows}</tbody>
@@ -1884,7 +2008,7 @@ function renderScheduleTab(){
       <div class="card">
         <h3>📋 Toàn bộ lịch đã đăng ký</h3>
         ${!schedule ? `<div class="spinner-wrap"><div class="spinner"></div> Đang tải...</div>` :
-          (rows ? `<div class="table-scroll"><table>
+          (rows ? `<div class="table-scroll scroll-hint"><table>
             <thead><tr><th style="text-align:left;">Ngày</th><th style="text-align:left;">Ca</th><th>Đoàn</th><th class="name-cell">Khu phố</th><th style="text-align:left;">Người đăng ký</th><th style="text-align:left;">SĐT</th><th>Thao tác</th></tr></thead>
             <tbody>${rows}</tbody>
           </table></div>` : `<p class="muted">Chưa có đăng ký nào.</p>`)
@@ -1965,7 +2089,7 @@ function renderWeekGridSection(){
       </div>
       <p class="muted" style="margin-bottom:12px;">Tuần ${getISOWeekNumber(weekStart)}/${new Date(weekStart+"T00:00:00").getFullYear()}: ${formatDateDisplay(days[0])} – ${formatDateDisplay(days[6])} <button class="edit-link" id="weekTodayBtn" style="margin-left:8px;">Về tuần này</button></p>
       ${!schedule ? `<div class="spinner-wrap"><div class="spinner"></div> Đang tải...</div>` : `
-      <div class="table-scroll">
+      <div class="table-scroll scroll-hint">
         <table>
           <thead><tr><th class="name-cell">Đoàn</th>${headerCells}</tr></thead>
           <tbody>${bodyRows}</tbody>
@@ -2092,7 +2216,7 @@ function renderTeamManagementSection(){
       <h3>🚌 Quản lý đoàn khám</h3>
       <p class="muted" style="margin-bottom:12px;">Thêm đoàn mới (ví dụ Đoàn 4 hỗ trợ tạm thời) với ngày bắt đầu/kết thúc hoạt động, hoặc xóa đoàn không còn hoạt động. Lịch khám cũ của đoàn đã xóa vẫn được giữ nguyên trong báo cáo và lưới tuần.</p>
       ${state.teamMgmtMessage ? `<div class="banner ${state.teamMgmtMessage.type}">${escapeHtml(state.teamMgmtMessage.text)}</div>` : ''}
-      <div class="table-scroll">
+      <div class="table-scroll scroll-hint">
         <table>
           <thead><tr><th class="name-cell">Đoàn</th><th style="text-align:left;">Bắt đầu</th><th style="text-align:left;">Kết thúc</th><th>Trạng thái</th><th>Thao tác</th></tr></thead>
           <tbody>${rows}</tbody>
