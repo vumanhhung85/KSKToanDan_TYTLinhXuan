@@ -120,7 +120,7 @@
   }
   .tabbtn{
     border:none;
-    background:#eef2ef;
+    background:#ffe3c2;
     padding:12px 20px;
     font-size:14px;
     font-weight:700;
@@ -132,7 +132,7 @@
     white-space:nowrap;
     transition:background .15s, color .15s;
   }
-  .tabbtn:hover{background:#e2e9e4; color:var(--green-dark);}
+  .tabbtn:hover{background:#ffd39e; color:var(--green-dark);}
   .tabbtn.active{
     background:var(--paper);
     color:var(--green-dark);
@@ -278,7 +278,7 @@
     text-transform:uppercase;
     font-size:11.5px;
     letter-spacing:.3px;
-    position:sticky; top:0;
+    position:sticky; top:0; z-index:2;
   }
   td.name-cell, th.name-cell{text-align:center; font-weight:600;}
   tbody tr:hover{background:#fbfbf8;}
@@ -289,6 +289,8 @@
     border-top:2px solid var(--green);
   }
   .table-scroll{overflow-x:auto;}
+  .report-scroll{overflow-x:auto; overflow-y:auto; max-height:65vh; position:relative;}
+  .col-highlight{background:#fffdf0 !important;}
   .rank-badge{
     display:inline-flex; align-items:center; justify-content:center;
     width:26px;height:26px;border-radius:50%;font-weight:800;font-size:12px;color:#fff;
@@ -414,6 +416,7 @@ let state = {
   saveMessage: null,  // {type, text}
   reportData: null,   // loaded lazily
   reportLoading: false,
+  reportSortBy: 'kham', // 'dat' | 'kham' — mặc định KHÁM khi đăng nhập
   passwordsMap: null,
   pwEdits: {},
   pwMsgs: {},
@@ -696,7 +699,7 @@ function logout(){
   state = {
     role:null, tab:null, entryKhuId:null, loginError:"", loginBusy:false,
     formValues:{date:"",phat:"",thu:"",kham:""}, formErrors:{}, saveMessage:null,
-    reportData:null, reportLoading:false,
+    reportData:null, reportLoading:false, reportSortBy:'kham',
     passwordsMap: state.passwordsMap, pwEdits:{}, pwMsgs:{},
     bulkDate:"", bulkLoaded:false, bulkValues:{}, bulkMeta:{}, bulkLoading:false,
     bulkMessage:null, bulkFileName:"", exportBusy:false, exportMessage:null,
@@ -1274,7 +1277,7 @@ function renderReportTab(){
   if(state.reportLoading || !state.reportData){
     return `<div class="card"><div class="spinner-wrap"><div class="spinner"></div> Đang tải báo cáo tổng (song song ${KHU_IDS.length} khu phố)...</div></div>`;
   }
-  const rows = state.reportData;
+  const rows = computeRankedRows(state.reportData, state.reportSortBy);
   let totalPop=0, totalPhat=0, totalThu=0, totalKham=0;
   rows.forEach(r=>{ totalPop+=r.pop; totalPhat+=r.phat; totalThu+=r.thu; totalKham+=r.kham; });
   const totalDat = totalPop ? (totalKham/totalPop*100) : 0;
@@ -1294,25 +1297,35 @@ function renderReportTab(){
     </div>`;
   }
 
+  const khamHighlight = state.reportSortBy === 'kham' ? 'col-highlight' : '';
+  const datHighlight = state.reportSortBy === 'dat' ? 'col-highlight' : '';
+
   const bodyRows = rows.map(r=>`
     <tr>
       <td class="name-cell">Khu phố ${r.id}</td>
       <td>${fmt(r.pop)}</td>
       <td>${fmt(r.phat)}</td>
       <td>${fmt(r.thu)}</td>
-      <td>${fmt(r.kham)}</td>
-      <td>${datBar(r.dat)}</td>
-      <td style="text-align:center;">${rankBadge(r.rank)}</td>
+      <td class="${khamHighlight}">${fmt(r.kham)}</td>
+      <td class="${datHighlight}">${datBar(r.dat)}</td>
+      <td class="col-highlight" style="text-align:center;">${rankBadge(r.rank)}</td>
     </tr>`).join('');
 
   return `
     <div class="card">
       <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px; margin-bottom:16px;">
         <h3 style="margin:0;">📈 Báo cáo tổng — Toàn phường</h3>
-        <button class="btn-secondary" id="refreshReportBtn">🔄 Làm mới</button>
+        <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+          ${(state.role === 'admin' || (state.role && state.role.type === 'custom')) ? `
+          <select class="khu-select" id="reportSortSelect" style="font-size:13px; padding:8px 12px; color:#c62828; font-weight:700;">
+            <option value="dat" style="color:#c62828;" ${state.reportSortBy==='dat'?'selected':''}>Sắp xếp theo ĐẠT (%)</option>
+            <option value="kham" style="color:#c62828;" ${state.reportSortBy==='kham'?'selected':''}>Sắp xếp theo KHÁM</option>
+          </select>` : ''}
+          <button class="btn-secondary" id="refreshReportBtn">🔄 Làm mới</button>
+        </div>
       </div>
       <p class="muted" style="margin-bottom:14px;">Đạt (%) = Khám / Dân số khu phố × 100 — tức tỷ lệ số người đã được khám trên tổng dân số của khu phố đó.</p>
-      <div class="table-scroll">
+      <div class="table-scroll report-scroll">
         <table>
           <thead>
             <tr>
@@ -1320,9 +1333,9 @@ function renderReportTab(){
               <th>Dân số</th>
               <th>Phát phiếu</th>
               <th>Thu về</th>
-              <th>Khám</th>
-              <th title="Đạt = Khám / Dân số × 100">Đạt (%)</th>
-              <th>Thứ hạng</th>
+              <th class="${khamHighlight}">Khám</th>
+              <th class="${datHighlight}" title="Đạt = Khám / Dân số × 100">Đạt (%)</th>
+              <th class="col-highlight" style="text-align:center;">Thứ hạng</th>
             </tr>
           </thead>
           <tbody>
@@ -1332,9 +1345,9 @@ function renderReportTab(){
               <td>${fmt(totalPop)}</td>
               <td>${fmt(totalPhat)}</td>
               <td>${fmt(totalThu)}</td>
-              <td>${fmt(totalKham)}</td>
-              <td>${datBar(totalDat)}</td>
-              <td>—</td>
+              <td class="${khamHighlight}">${fmt(totalKham)}</td>
+              <td class="${datHighlight}">${datBar(totalDat)}</td>
+              <td class="col-highlight" style="text-align:center;">—</td>
             </tr>
           </tbody>
         </table>
@@ -1342,6 +1355,20 @@ function renderReportTab(){
       <p class="muted" style="margin-top:14px;">🥇 Hạng 1 &nbsp; 🥈 Hạng 2 &nbsp; 🥉 Hạng 3 — xếp theo tỷ lệ Đạt (Khám / Dân số) cao nhất.</p>
     </div>
   `;
+}
+
+function computeRankedRows(rawRows, sortBy){
+  const key = sortBy === 'kham' ? 'kham' : 'dat';
+  const sorted = [...rawRows].sort((a,b)=> b[key] - a[key]);
+  let rankMap = {};
+  sorted.forEach((r,idx)=>{
+    if(idx>0 && sorted[idx-1][key] === r[key]){
+      rankMap[r.id] = rankMap[sorted[idx-1].id];
+    } else {
+      rankMap[r.id] = idx+1;
+    }
+  });
+  return sorted.map(r=> ({...r, rank: rankMap[r.id]}));
 }
 
 async function loadReport(){
@@ -1355,18 +1382,7 @@ async function loadReport(){
     const dat = pop ? (totals.kham/pop*100) : 0;
     return {id, pop, phat:totals.phat, thu:totals.thu, kham:totals.kham, dat};
   }));
-  // rank by dat descending (competition ranking)
-  const sorted = [...results].sort((a,b)=> b.dat - a.dat);
-  let rankMap = {};
-  sorted.forEach((r,idx)=>{
-    if(idx>0 && sorted[idx-1].dat === r.dat){
-      rankMap[r.id] = rankMap[sorted[idx-1].id];
-    } else {
-      rankMap[r.id] = idx+1;
-    }
-  });
-  results.forEach(r=> r.rank = rankMap[r.id]);
-  state.reportData = results.sort((a,b)=> a.rank - b.rank || a.id - b.id);
+  state.reportData = results;
   state.reportLoading = false;
   render();
 }
@@ -1374,6 +1390,11 @@ async function loadReport(){
 function bindReportTab(){
   const btn = document.getElementById('refreshReportBtn');
   if(btn) btn.addEventListener('click', loadReport);
+  const sortSelect = document.getElementById('reportSortSelect');
+  if(sortSelect) sortSelect.addEventListener('change', ()=>{
+    state.reportSortBy = sortSelect.value;
+    render();
+  });
 }
 
 /* ================= PASSWORD TAB (admin only) ================= */
